@@ -1,0 +1,189 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  username  String   @unique
+  email     String   @unique
+  fullName  String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  kudosSent     Kudos[]          @relation("KudosSender")
+  kudosReceived Kudos[]          @relation("KudosRecipient")
+  flagsGiven    KudosFlag[]      @relation("FlaggedBy")
+  kudosModerated Kudos[]         @relation("ModeratedBy")
+  comments      KudosComment[]   @relation("CommentAuthor")
+  reactions     KudosReaction[]
+
+  @@index([isActive])
+  @@index([createdAt])
+}
+
+model Kudos {
+  id              String   @id @default(uuid())
+  senderId        String
+  recipientId     String
+  message         String   @db.VarChar(280)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime? // When kudos was retracted (FR8.6)
+  
+  // Edit tracking
+  editedBy        Json?    // Array of {timestamp, oldMessage} for edit history
+  
+  // Soft delete and archival
+  isDeleted       Boolean  @default(false)
+  isArchived      Boolean  @default(false)
+  archivedAt      DateTime?
+  
+  // Visibility and moderation
+  isVisible       Boolean  @default(false) // True when approved
+  status          KudosStatus @default(PENDING)
+  moderatedBy     String?
+  moderatedAt     DateTime?
+  moderationReason String?
+  
+  // Flagging
+  flagCount       Int      @default(0)
+
+  // Relations
+  sender          User     @relation("KudosSender", fields: [senderId], references: [id], onDelete: Cascade)
+  recipient       User     @relation("KudosRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  moderator       User?    @relation("ModeratedBy", fields: [moderatedBy], references: [id], onDelete: SetNull)
+  flags           KudosFlag[]
+  comments        KudosComment[]
+  reactions       KudosReaction[]
+
+  @@unique([senderId, recipientId, createdAt]) // Prevent exact duplicates
+  @@index([recipientId])
+  @@index([createdAt])
+  @@index([isVisible, status])
+  @@index([flagCount])
+  @@index([isArchived, status, createdAt])
+}
+
+enum KudosStatus {
+  PENDING      // Awaiting moderation
+  APPROVED     // Visible in feed
+  REJECTED     // Hidden from feed
+}
+
+model KudosFlag {
+  id           String   @id @default(uuid())
+  kudosId      String
+  flaggedBy    String
+  flagReason   FlagReason
+  comment      String?
+  createdAt    DateTime @default(now())
+  
+  // Resolution tracking
+  isResolved   Boolean  @default(false)
+  resolvedAt   DateTime?
+  resolvedBy   String?
+  
+  // Archival after 30 days
+  isArchived   Boolean  @default(false)
+  archivedAt   DateTime?
+
+  // Relations
+  kudos        Kudos    @relation(fields: [kudosId], references: [id], onDelete: Cascade)
+  flaggedByUser User    @relation("FlaggedBy", fields: [flaggedBy], references: [id], onDelete: Cascade)
+
+  @@unique([kudosId, flaggedBy]) // One flag per user per kudos
+  @@index([kudosId])
+  @@index([flaggedBy, createdAt]) // For cooldown checking
+}
+
+enum FlagReason {
+  OFFENSIVE_LANGUAGE
+  HARASSMENT
+  SPAM
+  INAPPROPRIATE
+  OTHER
+}
+
+model KudosComment {
+  id           String   @id @default(uuid())
+  kudosId      String
+  userId       String
+  commentText  String   @db.VarChar(150)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  // Edit tracking
+  editedBy     Json?    // Array of {timestamp, oldText}
+  
+  // Soft delete
+  isDeleted    Boolean  @default(false)
+  
+  // Flagging (post-moderation)
+  flagCount    Int      @default(0)
+  isFlagged    Boolean  @default(false)
+  flaggedAt    DateTime?
+
+  // Relations
+  kudos        Kudos    @relation(fields: [kudosId], references: [id], onDelete: Cascade)
+  author       User     @relation("CommentAuthor", fields: [userId], references: [id], onDelete: Cascade)
+  flags        KudosCommentFlag[]
+
+  @@index([kudosId])
+  @@index([userId])
+  @@index([status, createdAt]) // For moderation queue
+}
+
+model KudosCommentFlag {
+  id           String   @id @default(uuid())
+  commentId    String
+  flaggedBy    String
+  flagReason   FlagReason
+  comment      String?
+  createdAt    DateTime @default(now())
+  
+  // Resolution tracking
+  isResolved   Boolean  @default(false)
+  resolvedAt   DateTime?
+
+  // Relations
+  kudosComment KudosComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, flaggedBy])
+  @@index([commentId])
+}
+
+model KudosReaction {
+  id           String   @id @default(uuid())
+  kudosId      String
+  userId       String
+  emoji        String   @db.VarChar(10) // Single emoji character
+  createdAt    DateTime @default(now())
+
+  // Relations
+  kudos        Kudos    @relation(fields: [kudosId], references: [id], onDelete: Cascade)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([kudosId, userId]) // One reaction per user per kudos
+  @@index([kudosId])
+  @@index([emoji])
+}
+
+model NotificationPreference {
+  id               String   @id @default(uuid())
+  userId           String   @unique
+  notifyOnKudos    Boolean  @default(false)
+  notifyOnComments Boolean  @default(false)
+  notifyOnReactions Boolean @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
